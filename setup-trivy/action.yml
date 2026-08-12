@@ -1,0 +1,47 @@
+name: 'Setup Trivy'
+description: 'Installs Trivy security scanner'
+author: 'JeanneBM'
+
+branding:
+  icon: 'shield'
+  color: 'red'
+
+inputs:
+  version:
+    description: 'Trivy version'
+    required: false
+    default: 'latest'
+  cache:
+    description: 'Enable vulnerability DB cache'
+    required: false
+    default: 'true'
+
+outputs:
+  trivy-version:
+    description: 'Installed version'
+    value: ${{ steps.install.outputs.version }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install Trivy
+      id: install
+      shell: bash
+      run: |
+        if [ "${{ inputs.version }}" = "latest" ]; then
+          VERSION=$(curl -s https://api.github.com/repos/aquasecurity/trivy/releases/latest | grep tag_name | cut -d '"' -f 4 | sed 's/v//')
+        else
+          VERSION=${{ inputs.version }}
+        fi
+        
+        curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin v${VERSION}
+        echo "version=${VERSION}" >> $GITHUB_OUTPUT
+        echo "Trivy ${VERSION} installed"
+
+    - name: Cache Trivy DB
+      if: inputs.cache == 'true'
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/trivy
+        key: trivy-db-${{ runner.os }}-${{ steps.install.outputs.version }}
+        restore-keys: trivy-db-${{ runner.os }}-

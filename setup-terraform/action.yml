@@ -1,0 +1,59 @@
+name: 'Setup Terraform + Cache'
+description: 'Installs Terraform and configures provider cache'
+author: 'JeanneBM'
+
+branding:
+  icon: 'box'
+  color: 'purple'
+
+inputs:
+  terraform-version:
+    description: 'Terraform version'
+    required: false
+    default: 'latest'
+  cache:
+    description: 'Enable provider cache'
+    required: false
+    default: 'true'
+  working-directory:
+    description: 'Directory containing .tf files'
+    required: false
+    default: '.'
+
+outputs:
+  terraform-version:
+    description: 'Installed Terraform version'
+    value: ${{ steps.setup.outputs.terraform-version }}
+  cache-hit:
+    description: 'Whether the cache was hit'
+    value: ${{ steps.cache.outputs.cache-hit }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup Terraform
+      id: setup
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: ${{ inputs.terraform-version }}
+        terraform_wrapper: false
+
+    - name: Set Plugin Cache Dir
+      if: inputs.cache == 'true'
+      shell: bash
+      run: |
+        echo "TF_PLUGIN_CACHE_DIR=$HOME/.terraform.d/plugin-cache" >> $GITHUB_ENV
+        mkdir -p $HOME/.terraform.d/plugin-cache
+
+    - name: Cache Terraform providers
+      if: inputs.cache == 'true'
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.terraform.d/plugin-cache
+          ${{ inputs.working-directory }}/.terraform
+        key: terraform-${{ runner.os }}-${{ inputs.terraform-version }}-${{ hashFiles('${{ inputs.working-directory }}/**/*.tf') }}
+        restore-keys: |
+          terraform-${{ runner.os }}-${{ inputs.terraform-version }}-
+          terraform-${{ runner.os }}-

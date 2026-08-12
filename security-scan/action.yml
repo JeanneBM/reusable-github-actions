@@ -1,0 +1,51 @@
+name: 'Security Scan'
+description: 'Scans filesystem/image with Trivy and uploads SARIF'
+author: 'JeanneBM'
+
+branding:
+  icon: 'alert-triangle'
+  color: 'red'
+
+inputs:
+  scan-type:
+    description: 'fs | image | repo'
+    required: false
+    default: 'fs'
+  path:
+    description: 'Path or image name to scan'
+    required: false
+    default: '.'
+  severity:
+    description: 'Severity levels (UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL)'
+    required: false
+    default: 'HIGH,CRITICAL'
+  exit-code:
+    description: 'Exit code when vulnerabilities are found'
+    required: false
+    default: '1'
+  upload-sarif:
+    description: 'Upload results to GitHub Security tab'
+    required: false
+    default: 'true'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup Trivy
+      uses: YourUsername/reusable-gitHub-actions/setup-trivy@v1
+
+    - name: Run Trivy scan
+      shell: bash
+      run: |
+        trivy ${{ inputs.scan-type }} \
+          --severity ${{ inputs.severity }} \
+          --exit-code ${{ inputs.exit-code }} \
+          --format sarif \
+          --output trivy-results.sarif \
+          ${{ inputs.path }}
+
+    - name: Upload SARIF
+      if: inputs.upload-sarif == 'true'
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: trivy-results.sarif
