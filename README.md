@@ -1,5 +1,5 @@
-# reusable-gitHub-actions
-
+# reusable-github-actions
+```
 reusable-gitHub-actions/
 ├── .github/
 │   └── workflows/
@@ -17,4 +17,4 @@ reusable-gitHub-actions/
 │   ├── action.yml
 │   └── README.md
 └── README.md
-
+```
