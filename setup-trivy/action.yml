@@ -1,5 +1,5 @@
 name: 'Setup Trivy'
-description: 'Installs Trivy security scanner'
+description: 'Installs a pinned Trivy release after verifying its SHA-256 checksum'
 author: 'JeanneBM'
 
 branding:
@@ -8,11 +8,15 @@ branding:
 
 inputs:
   version:
-    description: 'Trivy version'
+    description: 'Exact Trivy version without the leading v. Empty uses the pin in lib/versions.env. Requires sha256.'
     required: false
-    default: 'latest'
+    default: ''
+  sha256:
+    description: 'SHA-256 of trivy_<version>_Linux-64bit.tar.gz from the release checksums file'
+    required: false
+    default: ''
   cache:
-    description: 'Enable vulnerability DB cache'
+    description: 'Cache the vulnerability database for the current day'
     required: false
     default: 'true'
 
@@ -24,24 +28,21 @@ outputs:
 runs:
   using: 'composite'
   steps:
-    - name: Install Trivy
+    - name: Install verified Trivy binary
       id: install
       shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+        SHA256: ${{ inputs.sha256 }}
+        LIB: ${{ github.action_path }}/../lib
       run: |
-        if [ "${{ inputs.version }}" = "latest" ]; then
-          VERSION=$(curl -s https://api.github.com/repos/aquasecurity/trivy/releases/latest | grep tag_name | cut -d '"' -f 4 | sed 's/v//')
-        else
-          VERSION=${{ inputs.version }}
-        fi
-        
-        curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin v${VERSION}
-        echo "version=${VERSION}" >> $GITHUB_OUTPUT
-        echo "Trivy ${VERSION} installed"
+        bash "$LIB/install-tool.sh" trivy "$VERSION" "$SHA256"
+        echo "date=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
 
     - name: Cache Trivy DB
       if: inputs.cache == 'true'
-      uses: actions/cache@v4
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
         path: ~/.cache/trivy
-        key: trivy-db-${{ runner.os }}-${{ steps.install.outputs.version }}
+        key: trivy-db-${{ runner.os }}-${{ steps.install.outputs.date }}
         restore-keys: trivy-db-${{ runner.os }}-

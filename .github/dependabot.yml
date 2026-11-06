@@ -1,0 +1,14 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directories:
+      - /
+      - /security-scan
+      - /setup-cosign
+      - /setup-terraform
+      - /setup-trivy
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns: ['*']
