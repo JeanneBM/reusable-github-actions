@@ -138,17 +138,21 @@ jobs:
           FINDING: ${{ steps.finding.outcome }}
           FINDING_SARIF: ${{ steps.finding.outputs.sarif-file }}
           CLEAN: ${{ steps.clean.outcome }}
+          CLEAN_SARIF: ${{ steps.clean.outputs.sarif-file }}
         run: |
           set -euo pipefail
           [[ "$FINDING" == failure ]] || { echo "::error::root-user Dockerfile was not reported"; exit 1; }
           [[ "$CLEAN" == success ]]
+          [[ "$FINDING_SARIF" != "$CLEAN_SARIF" ]]
           # The SARIF report must be valid and contain the root-user finding (DS-0002).
-          python3 - "$FINDING_SARIF" <<'PY'
+          python3 - "$FINDING_SARIF" "$CLEAN_SARIF" <<'PY'
           import json, sys
           results = json.load(open(sys.argv[1]))["runs"][0]["results"]
           ids = {r["ruleId"] for r in results}
           assert "DS-0002" in ids, f"DS-0002 missing from SARIF results: {sorted(ids)}"
-          print("SARIF contains", sorted(ids))
+          clean_results = json.load(open(sys.argv[2]))["runs"][0]["results"]
+          assert not clean_results, f"Clean fixture has findings: {clean_results}"
+          print("Independent reports preserved; finding SARIF contains", sorted(ids))
           PY
 
   baseline:

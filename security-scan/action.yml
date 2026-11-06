@@ -62,7 +62,8 @@ runs:
         SKIP_DIRS: ${{ inputs.skip-dirs }}
       run: |
         case "$SCAN_TYPE" in fs|image|repo) ;; *) echo "::error::scan-type must be fs, image or repo"; exit 1 ;; esac
-        sarif="$RUNNER_TEMP/trivy-results.sarif"
+        report_dir=$(mktemp -d "$RUNNER_TEMP/trivy-report.XXXXXX")
+        sarif="$report_dir/results.sarif"
         echo "sarif-file=$sarif" >> "$GITHUB_OUTPUT"
         args=(--severity "$SEVERITY" --scanners "$SCANNERS")
         [[ -n "$SKIP_DIRS" ]] && args+=(--skip-dirs "$SKIP_DIRS")
