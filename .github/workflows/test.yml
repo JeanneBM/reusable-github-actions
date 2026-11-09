@@ -1,0 +1,162 @@
+name: Test actions
+
+# Consumer test: runs every action and the reusable workflow from this commit and
+# checks results and failure handling.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pins-in-sync:
+    name: Tool pins match lib/versions.env
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Compare security-baseline env with lib/versions.env
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          source lib/versions.env
+          wf=.github/workflows/security-baseline.yml
+          for var in TRIVY_VERSION TRIVY_SHA256 GITLEAKS_VERSION GITLEAKS_SHA256; do
+            expected=${!var}
+            actual=$(sed -nE "s/^  ${var}: '?([^']*)'?$/\1/p" "$wf")
+            if [[ "$actual" != "$expected" ]]; then
+              echo "::error file=$wf::$var is '$actual' but lib/versions.env has '$expected'"
+              exit 1
+            fi
+          done
+          echo "Pins are in sync"
+
+  setup-actions:
+    name: Setup actions install pinned tools
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - id: trivy
+        uses: ./setup-trivy
+      - id: cosign
+        uses: ./setup-cosign
+      - id: terraform
+        uses: ./setup-terraform
+        with:
+          cache: 'false'
+      - name: Check installed versions
+        env:
+          TRIVY_OUT: ${{ steps.trivy.outputs.trivy-version }}
+          COSIGN_OUT: ${{ steps.cosign.outputs.cosign-version }}
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          source lib/versions.env
+          [[ "$TRIVY_OUT" == "$TRIVY_VERSION" ]]
+          [[ "$COSIGN_OUT" == "$COSIGN_VERSION" ]]
+          trivy --version | grep -F "Version: $TRIVY_VERSION"
+          cosign version 2>&1 | grep -F "v$COSIGN_VERSION"
+          terraform version
+
+  setup-rejects-unverified:
+    name: Setup refuses unpinned or mismatched downloads
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - id: no-sha
+        continue-on-error: true
+        uses: ./setup-trivy
+        with:
+          version: '0.76.0'
+      - id: latest
+        continue-on-error: true
+        uses: ./setup-cosign
+        with:
+          version: 'latest'
+          sha256: '0000000000000000000000000000000000000000000000000000000000000000'
+      - id: wrong-sha
+        continue-on-error: true
+        uses: ./setup-trivy
+        with:
+          version: '0.76.1'
+          sha256: '0000000000000000000000000000000000000000000000000000000000000000'
+          cache: 'false'
+      - name: All three must have failed
+        env:
+          NO_SHA: ${{ steps.no-sha.outcome }}
+          LATEST: ${{ steps.latest.outcome }}
+          WRONG_SHA: ${{ steps.wrong-sha.outcome }}
+        run: |
+          echo "no-sha=$NO_SHA latest=$LATEST wrong-sha=$WRONG_SHA"
+          [[ "$NO_SHA" == failure && "$LATEST" == failure && "$WRONG_SHA" == failure ]]
+
+  security-scan:
+    name: Security scan fails on findings and passes when clean
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Create fixtures
+        run: |
+          # Generated at run time so the repository itself stays clean.
+          mkdir -p "$RUNNER_TEMP/fixtures/root-user" "$RUNNER_TEMP/fixtures/non-root"
+          printf 'FROM alpine:3.20\nRUN echo build\n' > "$RUNNER_TEMP/fixtures/root-user/Dockerfile"
+          printf 'FROM alpine:3.20\nUSER 65534\n' > "$RUNNER_TEMP/fixtures/non-root/Dockerfile"
+      - id: finding
+        continue-on-error: true
+        uses: ./security-scan
+        with:
+          path: ${{ runner.temp }}/fixtures/root-user
+          scanners: misconfig
+          upload-sarif: 'false'
+      - id: clean
+        uses: ./security-scan
+        with:
+          path: ${{ runner.temp }}/fixtures/non-root
+          scanners: misconfig
+          upload-sarif: 'false'
+      - name: Check outcomes and SARIF report
+        env:
+          FINDING: ${{ steps.finding.outcome }}
+          FINDING_SARIF: ${{ steps.finding.outputs.sarif-file }}
+          CLEAN: ${{ steps.clean.outcome }}
+          CLEAN_SARIF: ${{ steps.clean.outputs.sarif-file }}
+        run: |
+          set -euo pipefail
+          [[ "$FINDING" == failure ]] || { echo "::error::root-user Dockerfile was not reported"; exit 1; }
+          [[ "$CLEAN" == success ]]
+          [[ "$FINDING_SARIF" != "$CLEAN_SARIF" ]]
+          # The SARIF report must be valid and contain the root-user finding (DS-0002).
+          python3 - "$FINDING_SARIF" "$CLEAN_SARIF" <<'PY'
+          import json, sys
+          results = json.load(open(sys.argv[1]))["runs"][0]["results"]
+          ids = {r["ruleId"] for r in results}
+          assert "DS-0002" in ids, f"DS-0002 missing from SARIF results: {sorted(ids)}"
+          clean_results = json.load(open(sys.argv[2]))["runs"][0]["results"]
+          assert not clean_results, f"Clean fixture has findings: {clean_results}"
+          print("Independent reports preserved; finding SARIF contains", sorted(ids))
+          PY
+
+  baseline:
+    name: Reusable security baseline on this repository
+    permissions:
+      contents: read
+    uses: ./.github/workflows/security-baseline.yml

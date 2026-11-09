@@ -1,5 +1,5 @@
 name: 'Security Scan'
-description: 'Scans filesystem/image with Trivy and uploads SARIF'
+description: 'Scans a filesystem path, repository or image with a verified Trivy binary and optionally uploads SARIF'
 author: 'JeanneBM'
 
 branding:
@@ -15,37 +15,65 @@ inputs:
     description: 'Path or image name to scan'
     required: false
     default: '.'
+  scanners:
+    description: 'Comma-separated Trivy scanners (vuln, secret, misconfig, license)'
+    required: false
+    default: 'vuln,secret,misconfig'
   severity:
     description: 'Severity levels (UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL)'
     required: false
     default: 'HIGH,CRITICAL'
   exit-code:
-    description: 'Exit code when vulnerabilities are found'
+    description: 'Exit code when findings at the selected severity are present (0 reports without failing)'
     required: false
     default: '1'
+  skip-dirs:
+    description: 'Comma-separated directories to skip'
+    required: false
+    default: ''
   upload-sarif:
-    description: 'Upload results to GitHub Security tab'
+    description: 'Upload results to the GitHub Security tab (the job needs security-events: write)'
     required: false
     default: 'true'
+
+outputs:
+  sarif-file:
+    description: 'Path of the SARIF report'
+    value: ${{ steps.scan.outputs.sarif-file }}
 
 runs:
   using: 'composite'
   steps:
-    - name: Setup Trivy
-      uses: YourUsername/reusable-gitHub-actions/setup-trivy@v1
+    - name: Install verified Trivy binary
+      shell: bash
+      env:
+        LIB: ${{ github.action_path }}/../lib
+      run: bash "$LIB/install-tool.sh" trivy
 
     - name: Run Trivy scan
+      id: scan
       shell: bash
+      env:
+        SCAN_TYPE: ${{ inputs.scan-type }}
+        SCAN_PATH: ${{ inputs.path }}
+        SCANNERS: ${{ inputs.scanners }}
+        SEVERITY: ${{ inputs.severity }}
+        EXIT_CODE: ${{ inputs.exit-code }}
+        SKIP_DIRS: ${{ inputs.skip-dirs }}
       run: |
-        trivy ${{ inputs.scan-type }} \
-          --severity ${{ inputs.severity }} \
-          --exit-code ${{ inputs.exit-code }} \
-          --format sarif \
-          --output trivy-results.sarif \
-          ${{ inputs.path }}
+        case "$SCAN_TYPE" in fs|image|repo) ;; *) echo "::error::scan-type must be fs, image or repo"; exit 1 ;; esac
+        report_dir=$(mktemp -d "$RUNNER_TEMP/trivy-report.XXXXXX")
+        sarif="$report_dir/results.sarif"
+        echo "sarif-file=$sarif" >> "$GITHUB_OUTPUT"
+        args=(--severity "$SEVERITY" --scanners "$SCANNERS")
+        [[ -n "$SKIP_DIRS" ]] && args+=(--skip-dirs "$SKIP_DIRS")
+        # Human-readable findings in the log, then the SARIF report that decides the exit code.
+        trivy "$SCAN_TYPE" "${args[@]}" --exit-code 0 --format table "$SCAN_PATH"
+        trivy "$SCAN_TYPE" "${args[@]}" --exit-code "$EXIT_CODE" --format sarif --output "$sarif" "$SCAN_PATH"
 
     - name: Upload SARIF
-      if: inputs.upload-sarif == 'true'
-      uses: github/codeql-action/upload-sarif@v3
+      if: ${{ !cancelled() && inputs.upload-sarif == 'true' && steps.scan.outputs.sarif-file != '' }}
+      uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
       with:
-        sarif_file: trivy-results.sarif
+        sarif_file: ${{ steps.scan.outputs.sarif-file }}
+        category: trivy-${{ inputs.scan-type }}

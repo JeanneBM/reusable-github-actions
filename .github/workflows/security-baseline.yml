@@ -1,0 +1,125 @@
+name: Security baseline
+
+# Reusable workflow. Call it from another repository, pinned to a commit SHA:
+#
+#   jobs:
+#     security:
+#       permissions:
+#         contents: read
+#       uses: JeanneBM/reusable-github-actions/.github/workflows/security-baseline.yml@<commit-sha>
+#
+# Add `security-events: write` to the caller's permissions when upload-sarif is true.
+# Tool pins below must match lib/versions.env; the self-test checks this.
+
+on:
+  workflow_call:
+    inputs:
+      severity:
+        description: 'Trivy severities that fail the scan'
+        type: string
+        default: 'HIGH,CRITICAL'
+      fail-on-findings:
+        description: 'Fail the job when gitleaks or Trivy report findings'
+        type: boolean
+        default: true
+      scan-history:
+        description: 'Scan the full Git history for secrets (false scans only the checked-out files)'
+        type: boolean
+        default: true
+      skip-dirs:
+        description: 'Comma-separated directories Trivy should skip'
+        type: string
+        default: ''
+      upload-sarif:
+        description: 'Upload Trivy SARIF to the Security tab (caller must grant security-events: write)'
+        type: boolean
+        default: false
+
+env:
+  TRIVY_VERSION: '0.76.1'
+  TRIVY_SHA256: c7cbe3137fb8a48a17574bede3dd6beb16742d1e9772929940fc90082c39d9c0
+  GITLEAKS_VERSION: '8.30.1'
+  GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+
+jobs:
+  secrets:
+    name: Secrets (gitleaks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: ${{ inputs.scan-history && '0' || '1' }}
+          persist-credentials: false
+      - name: Install verified gitleaks binary
+        run: |
+          curl --fail --silent --show-error --location --retry 3 --proto '=https' -o "$RUNNER_TEMP/gitleaks.tar.gz" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "$GITLEAKS_SHA256  $RUNNER_TEMP/gitleaks.tar.gz" | sha256sum --check --strict
+          mkdir -p "$RUNNER_TEMP/gitleaks-bin"
+          tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$RUNNER_TEMP/gitleaks-bin" gitleaks
+          echo "$RUNNER_TEMP/gitleaks-bin" >> "$GITHUB_PATH"
+      - name: Scan for secrets (values redacted)
+        env:
+          MODE: ${{ inputs.scan-history && 'git' || 'dir' }}
+          EXIT_CODE: ${{ inputs.fail-on-findings && '1' || '0' }}
+        run: |
+          mkdir -p reports
+          # Uses .gitleaks.toml and .gitleaksignore from the repository root when present.
+          gitleaks "$MODE" . --redact --no-banner --exit-code "$EXIT_CODE" \
+            --report-format json --report-path reports/gitleaks.json
+      - name: Keep redacted report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: gitleaks-report
+          path: reports/gitleaks.json
+          if-no-files-found: ignore
+          retention-days: 14
+
+  trivy:
+    name: Vulnerabilities, secrets, misconfiguration and SBOM (Trivy)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Install verified Trivy binary
+        run: |
+          curl --fail --silent --show-error --location --retry 3 --proto '=https' -o "$RUNNER_TEMP/trivy.tar.gz" \
+            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          echo "$TRIVY_SHA256  $RUNNER_TEMP/trivy.tar.gz" | sha256sum --check --strict
+          mkdir -p "$RUNNER_TEMP/trivy-bin"
+          tar -xzf "$RUNNER_TEMP/trivy.tar.gz" -C "$RUNNER_TEMP/trivy-bin" trivy
+          echo "$RUNNER_TEMP/trivy-bin" >> "$GITHUB_PATH"
+      - name: Scan repository files
+        env:
+          SEVERITY: ${{ inputs.severity }}
+          SKIP_DIRS: ${{ inputs.skip-dirs }}
+          EXIT_CODE: ${{ inputs.fail-on-findings && '1' || '0' }}
+        run: |
+          mkdir -p reports
+          args=(--scanners 'vuln,secret,misconfig' --severity "$SEVERITY" --skip-dirs .git)
+          if [[ -n "$SKIP_DIRS" ]]; then args+=(--skip-dirs "$SKIP_DIRS"); fi
+          trivy fs "${args[@]}" --exit-code 0 --format table .
+          trivy fs "${args[@]}" --exit-code "$EXIT_CODE" --format sarif --output reports/trivy.sarif .
+      - name: Generate CycloneDX SBOM
+        if: ${{ !cancelled() }}
+        run: trivy fs --skip-dirs .git --format cyclonedx --output reports/sbom.cdx.json .
+      - name: Upload SARIF to the Security tab
+        if: ${{ !cancelled() && inputs.upload-sarif }}
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          sarif_file: reports/trivy.sarif
+          category: security-baseline-trivy
+      - name: Keep reports and SBOM
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: trivy-reports-and-sbom
+          path: reports/
+          if-no-files-found: ignore
+          retention-days: 14

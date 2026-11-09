@@ -1,16 +1,20 @@
 name: 'Setup Cosign'
-description: 'Installs Cosign for image signing and verification'
+description: 'Installs a pinned Cosign release after verifying its SHA-256 checksum'
 author: 'JeanneBM'
 
 branding:
-  icon: 'key'
+  icon: 'lock'
   color: 'orange'
 
 inputs:
   version:
-    description: 'Cosign version'
+    description: 'Exact Cosign version without the leading v. Empty uses the pin in lib/versions.env. Requires sha256.'
     required: false
-    default: 'latest'
+    default: ''
+  sha256:
+    description: 'SHA-256 of cosign-linux-amd64 from the release cosign_checksums.txt'
+    required: false
+    default: ''
 
 outputs:
   cosign-version:
@@ -20,17 +24,11 @@ outputs:
 runs:
   using: 'composite'
   steps:
-    - name: Install Cosign
+    - name: Install verified Cosign binary
       id: install
       shell: bash
-      run: |
-        if [ "${{ inputs.version }}" = "latest" ]; then
-          VERSION=$(curl -s https://api.github.com/repos/sigstore/cosign/releases/latest | grep tag_name | cut -d '"' -f 4 | sed 's/v//')
-        else
-          VERSION=${{ inputs.version }}
-        fi
-        
-        curl -sL "https://github.com/sigstore/cosign/releases/download/v${VERSION}/cosign-linux-amd64" -o /usr/local/bin/cosign
-        chmod +x /usr/local/bin/cosign
-        echo "version=${VERSION}" >> $GITHUB_OUTPUT
-        echo "Cosign ${VERSION} installed"
+      env:
+        VERSION: ${{ inputs.version }}
+        SHA256: ${{ inputs.sha256 }}
+        LIB: ${{ github.action_path }}/../lib
+      run: bash "$LIB/install-tool.sh" cosign "$VERSION" "$SHA256"
